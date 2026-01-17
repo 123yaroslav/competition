@@ -1,80 +1,56 @@
+# FAQ
 
-Predictorium
-leaderboard
-submit
-discord
+## Competition mechanics
 
-docs/
-quick start
-data
-submission guide
-rules
-timeline
-prizes
-faq
-get help
+### What is the goal of this competition?
+Predict future market indicators (`t0`, `t1`) from a sequence of previous market states. It’s a sequence modeling task.
 
-switch
-competition
-ne_onnn
-3112/3420
+### What’s the evaluation metric?
+We use **Weighted Pearson Correlation**, averaged across the two targets.
+- Predictions are clipped to `[-6, 6]`.
+- Samples are weighted by `abs(target)` (large moves matter more).
 
-out
-FAQ
-Here are answers to some common questions. This list will be updated during the competition.
+See `utils.weighted_pearson_correlation`.
 
-Competition mechanics
-What is the goal of this competition?
-Your goal is to predict future market indicators (t0, t1) from a sequence of previous market states. It's a sequence modeling task.
+### Can I work in a team?
+Yes. You can participate solo or as a team.
 
-What's the evaluation metric?
-We use the Weighted Pearson Correlation Coefficient, averaged across the two target variables. This metric weights predictions by the magnitude of the target value (larger moves matter more) and clips predictions to the range [-6, 6]. Check utils.weighted_pearson_correlation for details. A higher score is better.
+### How many submissions can I make per day?
+Up to **5**.
 
-Can I work in a team?
-Yes, you can participate as an individual or as part of a team. Currently there's no way to team-up in the interface.
+## Data questions
 
-How many submissions can I make per day?
-You can make up to 5 submissions per day.
+### Can I use external data?
+No. Train only using the provided datasets.
 
-Data questions
-Can I use external data?
-No. All solutions must be trained using only the provided train.parquet and valid.parquet datasets.
+### Can I use pre-trained models?
+Yes, if they are publicly available and do not contain external market data.
 
-Can I use pre-trained models?
-Yes, you may use open-source pre-trained models, provided they are publicly available and do not contain external market data.
+### Why are the features anonymized?
+To focus the competition on modeling rather than domain-specific feature crafting.
 
-Why are the features anonymized?
-The features are anonymized to focus the competition on the modeling task itself, rather than on domain-specific feature engineering.
+### How should I create a validation set?
+`valid.parquet` is provided, but splitting by `seq_ix` (random split or K-fold) is also reasonable because sequences are independent.
 
-How should I create a validation set?
-We provide a valid.parquet file for convenience. However, since the sequences in the data are independent and shuffled, we believe that random splitting by seq_ix is likely a valid and robust approach. You are free to merge the datasets and create your own splits (e.g., K-Fold).
+## Technical questions
 
-Technical questions
-What are the compute resources for the submission environment?
-Your code will run in a Linux container with:
+### What are the compute resources for the submission environment?
+- 1 CPU core
+- 16 GB RAM
+- No GPU
+- 60-minute total runtime limit
 
-1 CPU core
-16 GB of RAM
-No GPU — CPU inference only
-A 60-minute time limit for the entire test set
-What is the expected size of the test datasets?
-Both the public and private test sets have a size similar to the validation dataset, containing approximately 1,500 sequences each.
+### What is the expected size of the test datasets?
+Public and Private test sets are each roughly similar to `valid.parquet` (≈ 1,500 sequences).
 
-Why is there no GPU?
-In many real-world, high-frequency trading environments, inference must happen very quickly on CPU-only hardware. We've designed the competition environment to reflect these realistic constraints.
+### Why is there no GPU?
+This reflects common real-world constraints where inference must be fast and CPU-only.
 
-What Python libraries are available?
-You can expect standard libraries like numpy, pandas, scikit-learn, torch, onnxruntime and tensorflow.
+### What Python libraries are available?
+Expect a standard ML stack (e.g., `numpy`, `pandas`, `scikit-learn`, `torch`, `onnxruntime`, `tensorflow`).
 
-Does my code need to be deterministic?
-Yes. Your code should produce the same output when run twice on the same data. Remember to set your random seeds.
+### Does my code need to be deterministic?
+Yes. It should produce the same outputs when run twice on the same data. Set random seeds and avoid nondeterministic behavior.
 
-My solution has multiple files. How do I submit it?
-You can include multiple files in your .zip submission (model weights, helper scripts, etc.). Just make sure your main solution.py file is at the root of the archive.
-
-PREV
-←
-prizes
-NEXT
-get help
-→
+### My solution has multiple files. How do I submit it?
+Include them all in the `.zip` (weights, helpers, configs), with `solution.py` at the root.
