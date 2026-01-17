@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Protocol
 
 import numpy as np
+import pyarrow.parquet as pq
+from tqdm.auto import tqdm
 
 from scripts.lib_io import iter_parquet_batches
 from scripts.lib_metric import score_predictions
@@ -41,6 +43,10 @@ def score_stepwise(
     # Column layout expected by the package: first 3 meta, next 32 features, last 2 targets
     cols = None  # read all; relying on physical column order is brittle
 
+    pf = pq.ParquetFile(str(parquet_path))
+    total_rows = int(pf.metadata.num_rows)
+
+    pbar = tqdm(total=total_rows, desc=f"score:{Path(parquet_path).name}", unit="rows")
     for batch in iter_parquet_batches(
         parquet_path, columns=cols, batch_size=batch_size
     ):
@@ -64,7 +70,10 @@ def score_stepwise(
             np.float32, copy=False
         )
 
-        for i in range(len(seq_ix)):
+        batch_len = len(seq_ix)
+        pbar.update(batch_len)
+
+        for i in range(batch_len):
             s_ix = int(seq_ix[i])
             if allowed_seq_ix is not None and s_ix not in allowed_seq_ix:
                 continue
@@ -93,6 +102,8 @@ def score_stepwise(
 
             preds.append(pred)
             ys.append(Y[i])
+
+    pbar.close()
 
     pred_arr = np.asarray(preds, dtype=np.float32)
     y_arr = np.asarray(ys, dtype=np.float32)

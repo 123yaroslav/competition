@@ -11,6 +11,7 @@ sys.path.append(REPO_ROOT)
 
 import numpy as np
 import pandas as pd
+from tqdm.auto import tqdm
 
 
 def _load_model(ckpt_path: str):
@@ -121,7 +122,11 @@ def main() -> None:
         trues: list[np.ndarray] = []
 
         with torch.no_grad():
-            for start in range(0, len(idx), args.batch_size):
+            for start in tqdm(
+                range(0, len(idx), args.batch_size),
+                desc=f"oof:fold{fold}",
+                unit="batch",
+            ):
                 bidx = idx[start : start + args.batch_size]
                 xb = _make_features(X[bidx].astype(np.float32), use_diff)
                 yb = Y[bidx].astype(np.float32)

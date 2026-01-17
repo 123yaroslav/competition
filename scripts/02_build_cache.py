@@ -11,6 +11,7 @@ sys.path.append(REPO_ROOT)
 
 import numpy as np
 import pyarrow.parquet as pq
+from tqdm.auto import tqdm
 
 from scripts.lib_io import iter_parquet_batches
 
@@ -58,6 +59,8 @@ def main() -> None:
     cols = ["seq_ix", "step_in_seq", "need_prediction", *FEATURE_NAMES, *TARGET_NAMES]
 
     seq_cursor = 0
+
+    pbar = tqdm(total=int(n_seq), desc=f"cache:{Path(args.parquet).name}", unit="seq")
     for batch in iter_parquet_batches(
         args.parquet, columns=cols, batch_size=args.batch_size
     ):
@@ -94,6 +97,9 @@ def main() -> None:
         M[seq_cursor : seq_cursor + n_seq_batch] = need.reshape(n_seq_batch, 1000)
 
         seq_cursor += n_seq_batch
+        pbar.update(n_seq_batch)
+
+    pbar.close()
 
     if seq_cursor != n_seq:
         raise RuntimeError(f"Wrote {seq_cursor} sequences, expected {n_seq}")

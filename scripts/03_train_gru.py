@@ -59,6 +59,7 @@ def main() -> None:
     import pandas as pd
     import torch
     import torch.nn as nn
+    from tqdm.auto import tqdm
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -196,7 +197,11 @@ def main() -> None:
         rng.shuffle(idx_train)
 
         losses = []
-        for start in range(0, len(idx_train), args.batch_size):
+        for start in tqdm(
+            range(0, len(idx_train), args.batch_size),
+            desc=f"train:fold{args.fold}:ep{epoch}",
+            unit="batch",
+        ):
             batch_idx = idx_train[start : start + args.batch_size]
             x_np = make_features(X[batch_idx].astype(np.float32))
             y_np = Y[batch_idx].astype(np.float32)
