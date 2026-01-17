@@ -9,7 +9,6 @@ import pyarrow.parquet as pq
 from tqdm.auto import tqdm
 
 from scripts.lib_io import iter_parquet_batches
-from scripts.lib_metric import score_predictions
 from utils import DataPoint
 
 
@@ -37,8 +36,17 @@ def score_stepwise(
     and scores only rows where `need_prediction` is True.
     """
 
-    preds: list[np.ndarray] = []
-    ys: list[np.ndarray] = []
+    # Streaming metric accumulators (avoid storing ~1.4M predictions in RAM)
+    # For each target we keep weighted sums:
+    #   Sw, Swy, Swp, Swyy, Swpp, Swyp
+    Sw = np.zeros(2, dtype=np.float64)
+    Swy = np.zeros(2, dtype=np.float64)
+    Swp = np.zeros(2, dtype=np.float64)
+    Swyy = np.zeros(2, dtype=np.float64)
+    Swpp = np.zeros(2, dtype=np.float64)
+    Swyp = np.zeros(2, dtype=np.float64)
+
+    n_scored = 0
 
     # Column layout expected by the package: first 3 meta, next 32 features, last 2 targets
     cols = None  # read all; relying on physical column order is brittle
@@ -71,11 +79,16 @@ def score_stepwise(
         )
 
         batch_len = len(seq_ix)
-        pbar.update(batch_len)
+
+        # Update progress as we actually process rows (not upfront).
+        processed_in_batch = 0
 
         for i in range(batch_len):
             s_ix = int(seq_ix[i])
             if allowed_seq_ix is not None and s_ix not in allowed_seq_ix:
+                processed_in_batch += 1
+                if processed_in_batch % 4096 == 0:
+                    pbar.update(4096)
                 continue
 
             dp = DataPoint(
@@ -89,6 +102,10 @@ def score_stepwise(
             if not dp.need_prediction:
                 if pred is not None:
                     raise ValueError(f"Prediction not needed but returned for {dp}")
+
+                processed_in_batch += 1
+                if processed_in_batch % 4096 == 0:
+                    pbar.update(4096)
                 continue
 
             if pred is None:
@@ -100,18 +117,53 @@ def score_stepwise(
                     f"Prediction must be shape (2,), got {pred.shape} for {dp}"
                 )
 
-            preds.append(pred)
-            ys.append(Y[i])
+            # Streaming update for both targets
+            y = Y[i].astype(np.float64, copy=False)
+            p = np.clip(pred.astype(np.float64, copy=False), -6.0, 6.0)
+
+            w = np.abs(y)
+            w = np.maximum(w, 1e-8)
+
+            Sw += w
+            Swy += w * y
+            Swp += w * p
+            Swyy += w * y * y
+            Swpp += w * p * p
+            Swyp += w * y * p
+
+            n_scored += 1
+
+            processed_in_batch += 1
+            if processed_in_batch % 4096 == 0:
+                pbar.update(4096)
+
+        # flush remainder progress
+        rem = processed_in_batch % 4096
+        if rem:
+            pbar.update(rem)
 
     pbar.close()
 
-    pred_arr = np.asarray(preds, dtype=np.float32)
-    y_arr = np.asarray(ys, dtype=np.float32)
+    def _corr(ix: int) -> float:
+        if Sw[ix] <= 0:
+            return 0.0
+        mean_y = Swy[ix] / Sw[ix]
+        mean_p = Swp[ix] / Sw[ix]
 
-    scores = score_predictions(pred_arr, y_arr)
+        cov = (Swyp[ix] / Sw[ix]) - mean_y * mean_p
+        var_y = (Swyy[ix] / Sw[ix]) - mean_y * mean_y
+        var_p = (Swpp[ix] / Sw[ix]) - mean_p * mean_p
+
+        if var_y <= 0 or var_p <= 0:
+            return 0.0
+        return float(cov / (np.sqrt(var_y) * np.sqrt(var_p)))
+
+    t0 = _corr(0)
+    t1 = _corr(1)
+
     return StepwiseScoreResult(
-        t0=scores["t0"],
-        t1=scores["t1"],
-        weighted_pearson=scores["weighted_pearson"],
-        n_scored=int(pred_arr.shape[0]),
+        t0=t0,
+        t1=t1,
+        weighted_pearson=float((t0 + t1) / 2),
+        n_scored=int(n_scored),
     )

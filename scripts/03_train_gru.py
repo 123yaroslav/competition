@@ -32,6 +32,18 @@ def main() -> None:
     ap.add_argument("--dropout", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--use-diff", action="store_true", help="concat x and x_t-x_{t-1}")
+    ap.add_argument(
+        "--use-ewma", action="store_true", help="add EWMA-normalized features"
+    )
+    ap.add_argument("--ewma-alpha", type=float, default=0.05)
+
+    ap.add_argument(
+        "--valid-cache",
+        type=str,
+        default="",
+        help="Optional cache dir to evaluate on (e.g. artifacts/cache/valid_raw32).",
+    )
+
     ap.add_argument("--max-train-seq", type=int, default=0)
     ap.add_argument("--max-valid-seq", type=int, default=0)
 
@@ -45,7 +57,7 @@ def main() -> None:
     ap.add_argument(
         "--amp",
         action="store_true",
-        help="Use torch.cuda.amp autocast+GradScaler (CUDA only).",
+        help="Use AMP autocast+GradScaler (CUDA only).",
     )
 
     ap.add_argument(
@@ -115,7 +127,11 @@ def main() -> None:
             f"No validation sequences for fold={args.fold}. Did you run scripts/01_make_folds.py?"
         )
 
-    in_dim = 32 * (2 if args.use_diff else 1)
+    in_dim = 32
+    if args.use_diff:
+        in_dim += 32
+    if args.use_ewma:
+        in_dim += 32
 
     class GRUModel(nn.Module):
         def __init__(self):
@@ -137,18 +153,21 @@ def main() -> None:
     model = GRUModel().to(device)
 
     use_amp = bool(args.amp and device.type == "cuda")
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     opt = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
 
+    from scripts.lib_features import build_features_np
+
     def make_features(x_np: np.ndarray) -> np.ndarray:
-        if not args.use_diff:
-            return x_np
-        d = np.zeros_like(x_np)
-        d[:, 1:] = x_np[:, 1:] - x_np[:, :-1]
-        return np.concatenate([x_np, d], axis=-1)
+        return build_features_np(
+            x_np.astype(np.float32, copy=False),
+            use_diff=bool(args.use_diff),
+            use_ewma=bool(args.use_ewma),
+            ewma_alpha=float(args.ewma_alpha),
+        )
 
     def weighted_huber(pred, y, w, delta=1.0):
         # pred,y,w: (B,T,2)
@@ -159,35 +178,60 @@ def main() -> None:
         huber = 0.5 * quad * quad + delta * lin
         return (w * huber).mean()
 
-    def eval_split(indices: list[int]) -> dict[str, float]:
+    def _eval_arrays(
+        x_arr, y_arr, m_arr, indices: list[int], desc: str
+    ) -> dict[str, float]:
         model.eval()
         preds = []
         trues = []
         with torch.no_grad():
             for start in range(0, len(indices), args.batch_size):
                 batch_idx = indices[start : start + args.batch_size]
-                x_np = make_features(X[batch_idx].astype(np.float32))
-                y_np = Y[batch_idx].astype(np.float32)
-                m_np = M[batch_idx]
+                x_np = make_features(x_arr[batch_idx].astype(np.float32))
+                y_np = y_arr[batch_idx].astype(np.float32)
+                m_np = m_arr[batch_idx]
 
                 x = torch.from_numpy(x_np).to(device, non_blocking=True)
                 y = torch.from_numpy(y_np).to(device, non_blocking=True)
 
-                with torch.amp.autocast("cuda", enabled=use_amp):
+                with torch.cuda.amp.autocast(enabled=use_amp):
                     p = model(x)
 
-                # only scored steps
                 mask = torch.from_numpy(m_np)
                 mask2 = mask.unsqueeze(-1).expand_as(p)
 
                 preds.append(p[mask2].view(-1, 2).detach().cpu().numpy())
                 trues.append(y[mask2].view(-1, 2).detach().cpu().numpy())
 
-        pred_arr = np.concatenate(preds, axis=0)
-        y_arr = np.concatenate(trues, axis=0)
+        pred_flat = np.concatenate(preds, axis=0)
+        y_flat = np.concatenate(trues, axis=0)
+
         from scripts.lib_metric import score_predictions
 
-        return score_predictions(pred_arr, y_arr)
+        out = score_predictions(pred_flat, y_flat)
+        # attach extra info for printing only
+        out["_n_scored"] = float(pred_flat.shape[0])
+        return out
+
+    def eval_split(indices: list[int]) -> dict[str, float]:
+        return _eval_arrays(X, Y, M, indices, desc="fold")
+
+    valid_cache = None
+    if args.valid_cache:
+        vdir = Path(args.valid_cache)
+        vmeta = np.load(vdir / "meta.npy", allow_pickle=True).item()
+        vseqs = vmeta["seq_ix"].astype(np.int64)
+        v_dtype = np.float16 if vmeta["dtype"] == "float16" else np.float32
+        VX = np.memmap(
+            vdir / "X.dat", mode="r", dtype=v_dtype, shape=(len(vseqs), 1000, 32)
+        )
+        VY = np.memmap(
+            vdir / "Y.dat", mode="r", dtype=v_dtype, shape=(len(vseqs), 1000, 2)
+        )
+        VM = np.memmap(
+            vdir / "need_pred.dat", mode="r", dtype=np.bool_, shape=(len(vseqs), 1000)
+        )
+        valid_cache = (VX, VY, VM, list(range(len(vseqs))))
 
     best = None
 
@@ -210,7 +254,7 @@ def main() -> None:
             x = torch.from_numpy(x_np).to(device, non_blocking=True)
             y = torch.from_numpy(y_np).to(device, non_blocking=True)
 
-            with torch.amp.autocast("cuda", enabled=use_amp):
+            with torch.cuda.amp.autocast(enabled=use_amp):
                 pred = model(x)
 
             mask = torch.from_numpy(m_np)
@@ -230,11 +274,23 @@ def main() -> None:
             losses.append(float(loss.detach().float().cpu().item()))
 
         val = eval_split(idx_valid)
+        valid_holdout = None
+        if valid_cache is not None:
+            VX, VY, VM, VIDX = valid_cache
+            valid_holdout = _eval_arrays(VX, VY, VM, VIDX, desc="valid")
+
         train_loss = float(np.mean(losses)) if losses else float("nan")
 
-        print(
-            f"epoch {epoch:02d} loss={train_loss:.5f} val_mean={val['weighted_pearson']:.6f} t0={val['t0']:.6f} t1={val['t1']:.6f}"
+        msg = (
+            f"epoch {epoch:02d} loss={train_loss:.5f} "
+            f"fold_mean={val['weighted_pearson']:.6f} t0={val['t0']:.6f} t1={val['t1']:.6f}"
         )
+        if valid_holdout is not None:
+            msg += (
+                f" | valid_mean={valid_holdout['weighted_pearson']:.6f} "
+                f"t0={valid_holdout['t0']:.6f} t1={valid_holdout['t1']:.6f}"
+            )
+        print(msg)
 
         with log_path.open("a", encoding="utf-8") as f:
             f.write(
@@ -272,6 +328,8 @@ def main() -> None:
                         "layers": args.layers,
                         "dropout": args.dropout,
                         "use_diff": bool(args.use_diff),
+                        "use_ewma": bool(args.use_ewma),
+                        "ewma_alpha": float(args.ewma_alpha),
                         "fold": int(args.fold),
                     },
                     "best_val": val,
