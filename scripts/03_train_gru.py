@@ -136,7 +136,7 @@ def main() -> None:
     model = GRUModel().to(device)
 
     use_amp = bool(args.amp and device.type == "cuda")
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     opt = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -172,7 +172,7 @@ def main() -> None:
                 x = torch.from_numpy(x_np).to(device, non_blocking=True)
                 y = torch.from_numpy(y_np).to(device, non_blocking=True)
 
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                with torch.amp.autocast("cuda", enabled=use_amp):
                     p = model(x)
 
                 # only scored steps
@@ -205,7 +205,7 @@ def main() -> None:
             x = torch.from_numpy(x_np).to(device, non_blocking=True)
             y = torch.from_numpy(y_np).to(device, non_blocking=True)
 
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 pred = model(x)
 
             mask = torch.from_numpy(m_np)

@@ -14,6 +14,8 @@ Suggested order:
    - `python scripts/06_oof_predict.py --cache artifacts/cache/train_raw32 --models-dir artifacts/models --pattern 'gru_fold{fold}.pt' --n-folds 5`
 7. Build a submission zip from trained checkpoints:
    - `python scripts/07_build_submission.py --solution scripts/solution_torch_gru.py --weights artifacts/models/gru_fold0.pt artifacts/models/gru_fold1.pt artifacts/models/gru_fold2.pt artifacts/models/gru_fold3.pt artifacts/models/gru_fold4.pt --out-zip artifacts/submission/submission.zip`
+8. Score a built submission zip locally (exact stepwise interface):
+   - `python scripts/09_score_submission_zip.py --zip artifacts/submission/submission.zip --data datasets/valid.parquet --max-seq 50`
 
 Notes:
 - `train.parquet` is large (~10.7M rows). Cache building can take a while on CPU.
