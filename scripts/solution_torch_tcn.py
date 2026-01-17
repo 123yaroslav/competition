@@ -11,6 +11,16 @@ def _load_checkpoints():
     import torch.nn.functional as F
 
     torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except Exception:
+        pass
+
+    # Silence NNPACK warnings on unsupported CPUs
+    try:
+        torch.backends.nnpack.enabled = False  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
     ckpts = sorted(glob.glob("tcn_*.pt"))
     if not ckpts:
@@ -95,7 +105,22 @@ def _load_checkpoints():
 
         # receptive field window
         rf = 1 + (kernel - 1) * sum(2**i for i in range(levels))
-        loaded.append((model, use_diff, use_ewma, ewma_alpha, int(in_dim), int(rf)))
+
+        # TorchScript can help a bit on CPU; fall back if tracing fails.
+        traced = None
+        try:
+            example = torch.zeros((1, in_dim, rf), dtype=torch.float32)
+            traced = torch.jit.trace(model, example)
+            try:
+                traced_opt = torch.jit.optimize_for_inference(traced)  # type: ignore[arg-type]
+            except Exception:
+                traced_opt = traced
+            traced = traced_opt
+            traced.eval()
+        except Exception:
+            traced = model
+
+        loaded.append((traced, use_diff, use_ewma, ewma_alpha, int(in_dim), int(rf)))
 
     return loaded
 
@@ -205,7 +230,8 @@ class PredictionModel:
 
             # model expects (B, D, T)
             x = torch.from_numpy(w.T).unsqueeze(0)
-            y = model(x)  # (1, 2, T)
+            with torch.inference_mode():
+                y = model(x)  # (1, 2, T)
             pred = y[0, :, -1].detach().cpu().numpy()
             preds.append(pred)
 
