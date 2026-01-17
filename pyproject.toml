@@ -1,0 +1,15 @@
+[project]
+name = "competition-package"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.1",
+    "pandas>=2.3.3",
+    "ruff>=0.14.13",
+    "scikit-learn>=1.8.0",
+    "tqdm>=4.67.1",
+]
